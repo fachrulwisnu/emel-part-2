@@ -561,94 +561,42 @@ JSON schema:
 
 // --- FALLBACK FUNCTIONS ---
 
+const openaiDeepseek = new OpenAI({
+  apiKey: process.env.NVIDIA_API_KEY_DEEPSEEK || process.env.NVIDIA_API_KEY || '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',
+  baseURL: 'https://integrate.api.nvidia.com/v1',
+});
+
 async function fallbackDeepseek(emailText: string): Promise<any> {
-  const apiKey = process.env.NVIDIA_API_KEY_DEEPSEEK || process.env.NVIDIA_API_KEY || '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';
-  const systemContent = `Anda adalah asisten data operasional cerdas berbasis deepseek-ai/deepseek-v4-pro. Ekstrak data operasional penting dari email ke dalam format JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
-
-JSON schema:
-{
-  "summary": "Ringkasan email utama dan thread percakapan dalam Bahasa Indonesia",
-  "currency": "IDR" | "USD",
-  "total_amount": number | null,
-  "denomination_suggestion": number | null,
-  "suggested_bank": "BCA" | "MANDIRI" | "BRI" | "BNI" | "Lainnya" | "",
-  "suggested_folder_parent": "REGION 1" | "REGION 2" | "REGION 3" | "REGION 4" | "REGION 5" | "REGION 6",
-  "suggested_folder_child": "MEDAN" | "SURABAYA" | "JAKARTA" | "General" | "etc",
-  "extracted_notes": "Instruksi khusus atau catatan operasional",
-  "suggested_tag": "CIT" | "ATM" | "Lainnya",
-  "urgency_level": "High" | "Medium" | "Routine",
-  "action_required": true | false
-}`;
-
-  const payload = {
+  const completion = await openaiDeepseek.chat.completions.create({
     model: "deepseek-ai/deepseek-v4-pro",
-    messages: [
-      { role: "system", content: systemContent },
-      { role: "user", content: emailText }
-    ],
+    messages: [{"role":"user","content": emailText}],
     temperature: 1,
     top_p: 0.95,
     max_tokens: 16384,
-    chat_template_kwargs: { thinking: false },
+    chat_template_kwargs: {"thinking":false},
     stream: false
-  };
-
-  const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Accept": "application/json",
-      "Content-Type": "application/json"
-    },
-    timeout: 60000
-  });
-
-  const content = response.data?.choices?.[0]?.message?.content || '';
-  return parseCleanJson(content);
+  } as any);
+  return parseCleanJson(completion.choices[0]?.message?.content || '{}');
 }
 
 async function fallbackGemma4(emailText: string): Promise<any> {
-  const apiKey = process.env.NVIDIA_API_KEY_GEMMA4 || process.env.NVIDIA_API_KEY_GEMMA || process.env.NVIDIA_API_KEY || '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';
-  const systemContent = `Anda adalah asisten data operasional cerdas berbasis google/gemma-4-31b-it. Ekstrak data operasional penting dari email ke dalam format JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
-
-JSON schema:
-{
-  "summary": "Ringkasan email utama dan thread percakapan dalam Bahasa Indonesia",
-  "currency": "IDR" | "USD",
-  "total_amount": number | null,
-  "denomination_suggestion": number | null,
-  "suggested_bank": "BCA" | "MANDIRI" | "BRI" | "BNI" | "Lainnya" | "",
-  "suggested_folder_parent": "REGION 1" | "REGION 2" | "REGION 3" | "REGION 4" | "REGION 5" | "REGION 6",
-  "suggested_folder_child": "MEDAN" | "SURABAYA" | "JAKARTA" | "General" | "etc",
-  "extracted_notes": "Instruksi khusus atau catatan operasional",
-  "suggested_tag": "CIT" | "ATM" | "Lainnya",
-  "urgency_level": "High" | "Medium" | "Routine",
-  "action_required": true | false
-}`;
-
+  const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+  const headers = {
+    "Authorization": "Bearer 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",
+    "Accept": "application/json"
+  };
   const payload = {
-    model: "google/gemma-4-31b-it",
-    messages: [
-      { role: "system", content: systemContent },
-      { role: "user", content: emailText }
-    ],
-    temperature: 1,
-    top_p: 0.95,
-    max_tokens: 16384,
-    chat_template_kwargs: { enable_thinking: true },
-    stream: false
+    "messages": [{"role":"user","content": emailText}],
+    "model": "google/gemma-4-31b-it",
+    "chat_template_kwargs": {"enable_thinking":true},
+    "max_tokens": 16384,
+    "stream": false,
+    "temperature": 1,
+    "top_p": 0.95
   };
 
-  const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Accept": "application/json",
-      "Content-Type": "application/json"
-    },
-    timeout: 60000
-  });
-
-  const content = response.data?.choices?.[0]?.message?.content || '';
-  return parseCleanJson(content);
+  const response = await axios.post(invokeUrl, payload, { headers, timeout: 60000 });
+  return parseCleanJson(response.data?.choices?.[0]?.message?.content || '{}');
 }
 
 async function fallbackMinimax(emailText: string): Promise<any> {
@@ -998,11 +946,15 @@ export async function analyzeEmail(messageId: string): Promise<void> {
 
     // Fetch final email data to broadcast to frontend
     const finalEmail = await dbGetEmailByMessageId(messageId);
-    if (finalEmail && dbBroadcasterFn) {
-      dbBroadcasterFn('email_updated', {
-        email: finalEmail,
-        message: `Email "${finalEmail.subject}" successfully updated by AI.`
-      });
+    if (finalEmail) {
+      await applyDynamicFilters(finalEmail);
+      const postFilterEmail = await dbGetEmailByMessageId(messageId) || finalEmail;
+      if (dbBroadcasterFn) {
+        dbBroadcasterFn('email_updated', {
+          email: postFilterEmail,
+          message: `Email "${postFilterEmail.subject}" successfully updated by AI and dynamic filters.`
+        });
+      }
     }
   } catch (err) {
     console.error(`[Async AI] Fatal error running analyzeEmail for ${messageId}:`, err);
@@ -1579,6 +1531,48 @@ export async function dbApplyRetroactiveFilter(filter: CustomFilter): Promise<nu
   });
 }
 
+/**
+ * Matches subject, sender, and body_text with Dynamic Filter Rules from Supabase/local db.
+ * If match found, updates folder_parent and folder_child fields.
+ */
+export async function applyDynamicFilters(emailData: Email): Promise<boolean> {
+  try {
+    const filters = await dbGetCustomFilters();
+    let matched = false;
+    let folderParent = emailData.folder_parent || '';
+    let folderChild = emailData.folder_child || '';
+
+    for (const filter of filters) {
+      if (!filter.match_from && !filter.match_subject && !filter.match_body) {
+        continue;
+      }
+      let isMatch = true;
+      if (filter.match_from && !emailData.sender?.toLowerCase().includes(filter.match_from.toLowerCase())) isMatch = false;
+      if (filter.match_subject && !emailData.subject?.toLowerCase().includes(filter.match_subject.toLowerCase())) isMatch = false;
+      if (filter.match_body && !emailData.body_text?.toLowerCase().includes(filter.match_body.toLowerCase())) isMatch = false;
+
+      if (isMatch) {
+        folderParent = filter.action_parent;
+        folderChild = filter.action_child;
+        matched = true;
+        break; // Match first rule found
+      }
+    }
+
+    if (matched) {
+      console.log(`[applyDynamicFilters] Email "${emailData.subject}" (ID: ${emailData.message_id}) matched custom filter. Updating folder to "${folderParent} > ${folderChild}".`);
+      await dbUpdateEmailFields(emailData.message_id, {
+        folder_parent: folderParent,
+        folder_child: folderChild
+      });
+      return true;
+    }
+  } catch (err) {
+    console.error('[applyDynamicFilters] Error processing dynamic filters:', err);
+  }
+  return false;
+}
+
 // Granular fields update for "Smart Apply" and "Edit Suggestion" actions
 export async function dbUpdateEmailFields(
   message_id: string, 
@@ -1894,11 +1888,15 @@ async function _runHistoricalBackfillAsync(): Promise<void> {
 
       // Fetch final email data to broadcast to frontend
       const finalEmail = await dbGetEmailByMessageId(messageId);
-      if (finalEmail && dbBroadcasterFn) {
-        dbBroadcasterFn('email_updated', {
-          email: finalEmail,
-          message: `Email "${finalEmail.subject}" successfully updated by historical backfill.`
-        });
+      if (finalEmail) {
+        await applyDynamicFilters(finalEmail);
+        const postFilterEmail = await dbGetEmailByMessageId(messageId) || finalEmail;
+        if (dbBroadcasterFn) {
+          dbBroadcasterFn('email_updated', {
+            email: postFilterEmail,
+            message: `Email "${postFilterEmail.subject}" successfully updated by historical backfill and dynamic filters.`
+          });
+        }
       }
     }));
 

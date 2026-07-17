@@ -12,19 +12,9 @@ export interface ModelConfig {
 
 const MODELS: ModelConfig[] = [
   {
-    name: 'GLM-5.2',
-    id: 'z-ai/glm-5.2',
-    apiKey: process.env.NVIDIA_API_KEY_GLM || process.env.NVIDIA_API_KEY || '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'
-  },
-  {
     name: 'Nemotron',
-    id: 'nvidia/nemotron-340b-instruct',
-    apiKey: process.env.NVIDIA_API_KEY_NEMOTRON || process.env.NVIDIA_API_KEY || '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'
-  },
-  {
-    name: 'Gemma',
-    id: 'google/gemma-2-27b-it',
-    apiKey: process.env.NVIDIA_API_KEY_GEMMA || process.env.NVIDIA_API_KEY || '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'
+    id: 'nvidia/nemotron-3-ultra-550b-a55b',
+    apiKey: process.env.NVIDIA_API_KEY_NEMOTRON || process.env.NVIDIA_API_KEY || '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'
   }
 ];
 

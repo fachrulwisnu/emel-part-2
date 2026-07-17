@@ -5,7 +5,7 @@
 [![Database Cloud](https://img.shields.io/badge/Database-Supabase%20%2B%20SQLite-darkgreen?style=for-the-badge&logo=supabase)](https://supabase.com/)
 [![LLM Models](https://img.shields.io/badge/AI%20Core-NVIDIA%20NIM%20%2B%20Moonshot-orange?style=for-the-badge&logo=nvidia)](https://www.nvidia.com/)
 
-Sistem automasi ticketing berbasis email tingkat lanjut yang dirancang khusus untuk memproses pesanan **Cash In Transit (CIT)** dan pengisian uang tunai **ATM** secara cerdas, asinkron, dan real-time.
+Sistem automasi ticketing berbasis email tingkat lanjut yang dirancang khusus untuk memproses pesanan **Cash In Transit (CIT)** dan pengisian uang tunai **ATM** secara cerdas, asinkron, dan real-time menggunakan arsitektur AI hibrida berkinerja tinggi.
 
 ---
 
@@ -17,84 +17,89 @@ Dengan integrasi cerdas ini, tim operasional dapat memangkas waktu entri data ma
 
 ---
 
-## 🤖 2. Arsitektur AI: Split-Task & Mekanisme Rotasi Model (High Availability)
+## 🤖 2. Arsitektur AI Baru: Parallel Core & Mekanisme Fallback Terstruktur
 
-Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task AI Architecture** dan didukung dengan **Multi-Model AI Rotator** guna mengantisipasi kegagalan API, pemadaman jaringan, maupun kuota rate limit (HTTP 429) pada level produksi.
+Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task Parallel AI Architecture** yang berfokus pada kecepatan respon, ketahanan terhadap kegagalan API, pemadaman jaringan, maupun kuota rate limit (HTTP 429).
 
+### Alur Flow Pemrosesan AI
 ```
-                      +-----------------------------+
-                      |     Email Masuk Terdeteksi  |
-                      +-----------------------------+
-                                     |
-                                     v
-                      +-----------------------------+
-                      |   Event-Driven Trigger      |
-                      |   (Real-time Worker Node)   |
-                      +-----------------------------+
-                                     |
-               +---------------------+---------------------+
-               |                                           |
-         [Data Harian]                              [Historical Backfill]
-               |                                           |
-               | (Parallel Multi-Model Extraction)         v
-               +---------------------+            +--------------------------+
-               |                     |            | HEAVY-DUTY MODEL         |
-               v                     v            | moonshotai/kimi-k2.6     |
-      +------------------+  +------------------+  +--------------------------+
-      | DATA EXTRACTOR   |  | CONTEXTUAL TAG   |               |
-      | Inkling (NVIDIA)  |  | Minimax-M3        |               v
-      +------------------+  +------------------+  +--------------------------+
-               |                     |            |   SSE Live Log Stream    |
-               +----------+----------+            |   & Progress Bar Client  |
-                          | (Merge JSON Output)   +--------------------------+
-                          v                                    |
-               +---------------------+                         v
-               | Simpan ke Supabase  |            +--------------------------+
-               |   & SQLite Ganda    |            |  Simpan Hasil ke Cloud   |
-               +---------------------+            |     & SQLite Ganda       |
-                          |                       +--------------------------+
-                          | (Jika Qwen/Kimi Gagal)
-                          v
-               +---------------------+
-               |   FAILOVER POOL     |
-               | - z-ai/glm-5.2      |
-               | - nemotron-340b     |
-               | - gemma-2-27b-it    |
-               +---------------------+
-                          | (Jika Semua Gagal)
-                          v
-               +---------------------+
-               |     Rule-Based      |
-               |   Regex Fallback    |
-               +---------------------+
+                    +------------------------------------+
+                    |       Email Masuk Terdeteksi       |
+                    +------------------------------------+
+                                      |
+                                      v
+                    +------------------------------------+
+                    |     Analisis Asinkron Dipicu       |
+                    +------------------------------------+
+                                      |
+               +----------------------+----------------------+
+               |                                             |
+               v (Pemrosesan Paralel Core)                   v
+  +------------------------------------------+  +------------------------------------------+
+  |    PRIMARY SUMMARY CORE                  |  |    PRIMARY CONTEXTUAL TAGGING            |
+  |    Model: Nemotron 3 Ultra (550b)        |  |    Model: Inkling                        |
+  |    Engine: Axios Murni                   |  |    Engine: Axios Murni                   |
+  |    Fitur: `enable_thinking: true`        |  |    Fitur: `max_tokens: 8192`             |
+  +------------------------------------------+  +------------------------------------------+
+               |                                             |
+               +----------------------+----------------------+
+                                      | (Merge Output JSON)
+                                      v
+                       +-----------------------------+
+                       | Sukses? -> Simpan ke DB     |
+                       +-----------------------------+
+                                      |
+                                      | (Jika Core Gagal)
+                                      v
+                       +-----------------------------+
+                       | FALLBACK TIER 1             |
+                       | Model: DeepSeek V4 Pro      |
+                       | Engine: OpenAI SDK          |
+                       +-----------------------------+
+                                      |
+                                      | (Jika Tier 1 Gagal)
+                                      v
+                       +-----------------------------+
+                       | FALLBACK TIER 2             |
+                       | Model: Gemma 4 31B          |
+                       | Engine: Axios (Hardcoded)   |
+                       +-----------------------------+
+                                      |
+                                      | (Jika Tier 2 Gagal)
+                                      v
+                       +-----------------------------+
+                       | ABSOLUTE LAST RESORT        |
+                       | Model: Minimax M3           |
+                       | Engine: Axios Murni         |
+                       +-----------------------------+
+                                      |
+                                      | (Jika Semua AI Gagal)
+                                      v
+                       +-----------------------------+
+                       | Regex / Rule-Based Fallback |
+                       +-----------------------------+
 ```
 
-### ⚙️ Detail Alur Kerja AI & Split-Task Processing
-1. **Event-Driven Processing:** Sistem meninggalkan metode polling Cron Job konvensional yang lambat. Ketika ada email baru yang masuk, sistem secara instan memicu Worker Node.js untuk memproses analisis AI secara asinkron.
-2. **Split-Task AI Processing (Parallel Multi-Model Extraction):**
-   * **Inkling (NVIDIA) - Data Extractor:** Dipercaya sebagai mesin ekstraktor data utama berkat kapasitas parameternya yang sangat masif. Model ini ditugaskan secara **KHUSUS** untuk mengekstrak data operasional presisi tinggi: `summary`, `currency`, `total_amount`, dan `denomination_suggestion` serta informasi detail nominal lainnya.
-   * **Minimax-M3 - Contextual Tagger:** Memiliki pemahaman bahasa kontekstual yang mendalam serta window context yang panjang. Model ini ditugaskan secara **KHUSUS** untuk menganalisis konteks percakapan lama (*reply thread*) serta menentukan klasifikasi `suggested_tag` (CIT/ATM/Lainnya), `urgency_level`, dan status `action_required`.
-   * **Concurrent Execution (`Promise.all`):** Kedua model AI tersebut dieksekusi secara bersamaan (paralel) dari backend untuk mencegah hambatan latency (overhead waktu) sehingga pemrosesan berlangsung sangat responsif, lalu keluarannya digabungkan (*merge*) secara rapi.
-   * **Optimasi Payload & Timeout:** Untuk mempercepat respons AI, payload `messages` dibersihkan dan hanya menyertakan teks pesan murni (`body_text`) tanpa menyertakan Base64 attachments berukuran besar. Konfigurasi `timeout: 60000` (60 detik) diterapkan di level Axios untuk menjamin kestabilan pemrosesan model raksasa Inkling saat mengekstrak struktur data denominasi yang rumit.
-3. **Mekanisme Failover Otomatis (High Availability):**
-   * **Rotator Pool Backup:** Jika salah satu model Inkling/Minimax mengalami gangguan, sistem secara dinamis mengalihkan seluruh tugas ke rotator pool utama yang berisi **z-ai/glm-5.2**, **nvidia/nemotron-340b-instruct**, atau **google/gemma-2-27b-it**.
-   * **Rule-Based Fallback:** Sebagai pertahanan terakhir, sistem didukung algoritma parsing reguler (*Regex*) untuk mengekstrak data dasar sehingga data tetap berhasil ter-input dengan aman.
-4. **Heavy-Duty Backfill Model (`moonshotai/kimi-k2.6`):** Digunakan khusus untuk memproses pengolahan ulang ribuan data historis yang kosong di latar belakang secara real-time via Server-Sent Events (SSE).
-5. **AI Connection Health Diagnostics:** Sistem menyediakan fitur halaman **AI Settings & Status** untuk mendiagnosis koneksi ke masing-masing model (Inkling, Minimax, GLM-5.2) secara real-time dengan melacak Latency (respon ms) menggunakan API endpoint `/api/settings/ai-health`.
+### ⚙️ Detail Arsitektur AI
+1. **Parallel Execution Core:** 
+   * **Nemotron 3 Ultra (nvidia/nemotron-3-ultra-550b-a55b):** Ditugaskan secara khusus untuk mengekstrak ringkasan operasional (`summary`), mata uang (`currency`), nominal (`total_amount`), bank tujuan (`suggested_bank`), wilayah cabang (`suggested_folder_parent`), serta instruksi khusus (`extracted_notes`). Dipanggil menggunakan **Axios murni** dengan parameter `chat_template_kwargs: { "enable_thinking": true }` dan `reasoning_budget: 16384` untuk kualitas penalaran tertinggi.
+   * **Inkling (thinkingmachines/inkling):** Ditugaskan khusus untuk mengekstrak tipe tag (`suggested_tag`), tingkat urgensi (`urgency_level`), dan keputusan tindakan (`action_required`). Dipanggil menggunakan **Axios murni** dengan parameter `max_tokens: 8192`.
+   * Panggilan ini dieksekusi secara konkuren (`Promise.all`) guna meminimalkan latency pemrosesan keseluruhan.
+2. **Fallback Tier 1 (DeepSeek V4 Pro):** Jika eksekusi paralel core mengalami kendala, sistem akan jatuh ke **deepseek-ai/deepseek-v4-pro** menggunakan **OpenAI SDK** dengan parameter `chat_template_kwargs: { "thinking": false }` guna menjamin keandalan data ekstraksi tanpa overhead berlebih.
+3. **Fallback Tier 2 (Gemma 4 31B):** Jika Fallback Tier 1 gagal, sistem secara otomatis merujuk ke **google/gemma-4-31b-it** dengan menggunakan pemanggilan **Axios murni** yang terisolasi secara kokoh dengan kredensial ter-hardcode di dalam fungsinya untuk keandalan eksekusi mutlak.
+4. **Absolute Last Resort (Minimax M3):** Sebagai jaring pengaman AI terakhir, model **minimaxai/minimax-m3** dipanggil menggunakan Axios murni untuk memproses dan merestorasi seluruh data operasional dari teks email.
+5. **Rule-Based Fallback:** Jika semua model AI di atas mengalami kegagalan total, sistem menggunakan algoritma reguler ekspresi (Regex) cerdas untuk menghindari hilangnya data transaksi.
 
 ---
 
-## ✨ 3. Fitur Utama (Key Features)
+## ✨ 3. Fitur Utama Secara Detail
 
-| Fitur | Deskripsi | Teknologi Pendukung |
-| :--- | :--- | :--- |
-| **🤖 Smart JSON Extraction** | Secara otomatis mem-parsing body email (bahkan thread percakapan yang panjang) dan mengubahnya menjadi form terstruktur yang berisi mata uang, total nominal, pecahan denominasi, urgensi, dan tag operasional. | NVIDIA NIM, AI Model Rotator |
-| **🟢 AI Settings & Status** | Menu diagnosis kesehatan (Health Check) koneksi real-time untuk memverifikasi fungsionalitas, status aktif, dan latency model-model AI (Inkling, Minimax-M3, GLM-5.2). | Promise.allSettled, Diagnostics API |
-| **📧 Gmail-Style UI** | Tampilan surat masuk yang bersih dan minimalis menyerupai inbox Gmail. Menggunakan teknik DOM manipulation untuk mendeteksi riwayat percakapan lama (`> quote`) dan menyembunyikannya ke dalam tombol collapsible `...` agar UI tetap rapi. | React, Tailwinds CSS |
-| **📎 Serverless Base64 Attachments** | Berkas lampiran gambar atau PDF tidak disimpan dalam bucket cloud eksternal. Sistem mengonversi lampiran langsung menjadi Base64 string terkompresi (maks 3MB) ke dalam PostgreSQL. Client me-render thumbnail interaktif yang siap diunduh. | SQLite, Supabase Engine |
-| **🔄 Real-time Historical Backfill** | Fitur singkronisasi email historis asinkron menggunakan Server-Sent Events (SSE). UI menampilkan Log Terminal & Progress Bar yang ter-update secara real-time dari data stream backend dengan delay otomatis pencegah rate limit. | EventSource API, Express SSE |
-| **🗺️ Regional Branch Routing** | Mengklasifikasikan email ke struktur folder wilayah regional (Region 1-10) dan kantor cabang secara otomatis berdasarkan domain pengirim atau subjek email. | Routing Engine |
-| **💳 ActiveATM CIT API Integration** | Dilengkapi antarmuka proxy server yang aman untuk terhubung dengan API eksternal guna memproses status penugasan pengiriman uang dan ketersediaan unit armada pengawal. | Axios Proxy, Express Backend |
+* **🤖 Smart Split-Task JSON Extraction:** Memilah tugas pemrosesan email yang rumit menjadi sub-tugas paralel ke beberapa model AI terbaik di kelasnya untuk menghasilkan data terstruktur dengan format JSON yang sangat akurat.
+* **🟢 Sistem AI Health Check & Diagnostics:** Endpoint `/api/settings/ai-health` mendiagnosis kesehatan masing-masing model AI secara real-time. Ping payload dioptimalkan tanpa streaming (`stream: false`) untuk mencegah deadlock atau hanging. Jika terjadi kegagalan atau timeout, pesan error detail dari API ditangkap dan dikirim ke dashboard untuk kemudahan debugging.
+* **📧 UI Dasbor Tiket Interaktif (Gmail-Style):** Desain antarmuka modern yang nyaman dipandang. Menampilkan indikator status model AI yang memproses (misalnya Nemotron/Inkling, DeepSeek, Gemma, Minimax) secara dinamis.
+* **📎 Dukungan Base64 Attachments:** File lampiran dikodekan langsung menjadi Base64 string terkompresi (maksimal 3MB) dan disimpan di database, meniadakan ketergantungan pada penyimpanan cloud eksternal yang rawan kebocoran data.
+* **🔄 Event-Driven Real-time Updates:** Perubahan status analisis AI, sinkronisasi email, dan log penayangan disinkronkan secara instan ke frontend melalui log bergaya terminal yang elegan.
+* **🗺️ Regional Branch Routing:** Email diklasifikasikan secara otomatis ke struktur regional (Region 1-10) dan kantor cabang pembantu berdasarkan kriteria pengirim atau subjek email secara instan.
 
 ---
 
@@ -103,13 +108,13 @@ Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task AI Architectu
 * **Frontend Framework:** React 18, Vite, Tailwind CSS, Lucide Icons, Framer Motion (Animasi Micro-interaction).
 * **Backend Runtime:** Node.js Express Server, tsx (TypeScript Execution), esbuild (Ultra-fast bundler).
 * **Databases:** Supabase PostgreSQL (Cloud State Sync) & SQLite 3 (Durable Local Storage Engine).
-* **AI & Integration:** SDK `openai` resmi terintegrasi dengan NVIDIA NIM API endpoints & Moonshot AI.
+* **AI & Integration:** Axios murni & SDK `openai` yang dikombinasikan dengan NVIDIA NIM API endpoints.
 
 ---
 
 ## 🚀 5. Memulai (Getting Started)
 
-### Prasyarat System
+### Prasyarat Sistem
 * Node.js v18 atau versi yang lebih baru.
 * Akun Supabase (opsional, sistem otomatis menggunakan SQLite lokal jika tidak dikonfigurasi).
 
@@ -134,11 +139,12 @@ Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task AI Architectu
    Isi parameter rahasia berikut di dalam file `.env`:
    ```env
    # API Key NVIDIA NIM (Wajib untuk Analisis Cerdas AI)
-   NVIDIA_API_KEY=nvapi-22LB****************************************
-   
-   # Sinkronisasi Cloud Supabase (Opsional)
-   SUPABASE_URL=https://your-project.supabase.co
-   SUPABASE_KEY=your-anon-key
+   NVIDIA_API_KEY=""
+   NVIDIA_API_KEY_INKLING=""
+   NVIDIA_API_KEY_MINIMAX=""
+   NVIDIA_API_KEY_NEMOTRON=""
+   NVIDIA_API_KEY_DEEPSEEK=""
+   NVIDIA_API_KEY_GEMMA4=""
    ```
 
 4. **Jalankan Aplikasi dalam Mode Pengembangan (Dev Mode):**
@@ -148,7 +154,6 @@ Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task AI Architectu
    Aplikasi dan backend server akan berjalan secara paralel di alamat [http://localhost:3000](http://localhost:3000).
 
 5. **Kompilasi Produksi (Production Build):**
-   Untuk mengompilasi aplikasi frontend dan membundel backend TypeScript menjadi satu berkas CJS produksi yang sangat optimal:
    ```bash
    npm run build
    npm run start
@@ -158,6 +163,6 @@ Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task AI Architectu
 
 ## 🛡️ 6. Penanganan Kesalahan (Error Handling & Robustness)
 
-* **API Timeout Protection:** Permintaan AI eksternal dilengkapi dengan batasan timeout aman sebesar 25 detik untuk menghindari deadlock pada server.
-* **Stream Disconnect Recovery:** Client-side EventSource secara otomatis akan melakukan upaya penyambungan ulang (*auto-reconnect*) jika koneksi internet terputus di tengah proses backfilling.
-* **Double-Write Fallback:** Jika jaringan ke cloud database Supabase tidak stabil, server akan tetap menyimpan seluruh log operasional dan perubahan di SQLite lokal secara utuh, lalu memperbaruinya ke cloud saat koneksi pulih kembali.
+* **API Timeout Protection:** Seluruh permintaan eksternal AI dipasangi batas waktu (timeout) 60 detik menggunakan Axios untuk meminimalkan penumpukan proses hanging.
+* **Diagnostic Exception Capture:** Jika Health Check mengalami kendala, UI menampilkan status detail kesalahan (misal: `HTTP 400: Unsupported parameter` atau pesan asli server) untuk ketepatan diagnosis operasional.
+* **Double-Write Fallback:** Jika koneksi Supabase terputus, data tetap aman tersimpan di SQLite lokal dan siap digunakan secara independen tanpa disrupsi.

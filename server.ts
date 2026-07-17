@@ -1,6 +1,7 @@
 import express, { Response } from "express";
 import path from "path";
 import axios from "axios";
+import OpenAI from "openai";
 import { createServer as createViteServer } from "vite";
 import { 
   initDatabaseService, 
@@ -15,7 +16,9 @@ import {
   runHistoricalBackfill,
   dbGetUnsummarizedEmails,
   ruleBasedFallback,
-  registerDbBroadcaster
+  registerDbBroadcaster,
+  applyDynamicFilters,
+  dbGetEmailByMessageId
 } from "./src/database-service";
 import { 
   performBackgroundSync, 
@@ -116,9 +119,67 @@ async function startServer() {
     }
     
     try {
+      if (modelName === "deepseek-ai/deepseek-v4-pro") {
+        const openaiDeepseek = new OpenAI({
+          apiKey: actualKey || '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',
+          baseURL: 'https://integrate.api.nvidia.com/v1',
+        });
+        const completion = await openaiDeepseek.chat.completions.create({
+          model: "deepseek-ai/deepseek-v4-pro",
+          messages: [{"role": "user", "content": "Balas dengan kata OK"}],
+          temperature: 1,
+          top_p: 0.95,
+          max_tokens: 16384,
+          chat_template_kwargs: {"thinking": false},
+          stream: false
+        } as any);
+
+        const latency = Date.now() - start;
+        return {
+          model: modelName,
+          status: "Active",
+          latency: `${latency}ms`
+        };
+      }
+
+      if (modelName === "google/gemma-4-31b-it") {
+        const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+        const headers = {
+          "Authorization": "Bearer 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",
+          "Accept": "application/json"
+        };
+        const payload = {
+          "messages": [{"role": "user", "content": "Balas dengan kata OK"}],
+          "model": "google/gemma-4-31b-it",
+          "chat_template_kwargs": {"enable_thinking": true},
+          "max_tokens": 16384,
+          "stream": false,
+          "temperature": 1,
+          "top_p": 0.95
+        };
+
+        const response = await axios.post(invokeUrl, payload, { headers, timeout: 60000 });
+        const latency = Date.now() - start;
+        if (response.status === 200) {
+          return {
+            model: modelName,
+            status: "Active",
+            latency: `${latency}ms`
+          };
+        } else {
+          return {
+            model: modelName,
+            status: "Error",
+            message: `HTTP Status ${response.status}`,
+            latency: `${latency}ms`
+          };
+        }
+      }
+
+      // Default axios flow for other models
       const payload: any = {
         model: modelName,
-        messages: [{ role: "user", content: "Balas dengan kata 'OK' saja tanpa tanda baca." }],
+        messages: [{ role: "user", content: "Balas dengan kata OK" }],
         temperature: 1,
         top_p: 0.95,
         max_tokens: 10,
@@ -128,10 +189,6 @@ async function startServer() {
       if (modelName === "nvidia/nemotron-3-ultra-550b-a55b") {
         payload.chat_template_kwargs = { enable_thinking: true };
         payload.reasoning_budget = 1024;
-      } else if (modelName === "google/gemma-4-31b-it") {
-        payload.chat_template_kwargs = { enable_thinking: true };
-      } else if (modelName === "deepseek-ai/deepseek-v4-pro") {
-        payload.chat_template_kwargs = { thinking: false };
       }
 
       const response = await axios.post(
@@ -149,8 +206,6 @@ async function startServer() {
 
       const latency = Date.now() - start;
       if (response.status === 200) {
-        // Parse the response content
-        const content = response.data?.choices?.[0]?.message?.content || "";
         return {
           model: modelName,
           status: "Active",
@@ -447,6 +502,10 @@ async function startServer() {
               total_amount: aiResult.total_amount ? Number(aiResult.total_amount) : undefined,
               ai_status: 'COMPLETED'
             });
+            const updatedEmail = await dbGetEmailByMessageId(messageId);
+            if (updatedEmail) {
+              await applyDynamicFilters(updatedEmail);
+            }
             completed_count++;
             res.write(`data: ${JSON.stringify({ 
               type: 'progress', 
@@ -468,6 +527,10 @@ async function startServer() {
               is_important: fb.is_important,
               ai_status: 'COMPLETED'
             });
+            const updatedEmail = await dbGetEmailByMessageId(messageId);
+            if (updatedEmail) {
+              await applyDynamicFilters(updatedEmail);
+            }
             completed_count++;
             res.write(`data: ${JSON.stringify({ 
               type: 'progress', 

@@ -1594,7 +1594,7 @@ export default function App() {
                         <Sparkles className="h-4 w-4 animate-spin shrink-0" />
                         <span className="text-xs font-semibold">AI Operasional sedang mengekstrak detail CIT/ATM...</span>
                       </div>
-                      <span className="text-[10px] font-bold text-sky-600 bg-sky-100/80 px-2 py-0.5 rounded-md animate-pulse font-mono">GLM-5.2 ACTIVATED</span>
+                      <span className="text-[10px] font-bold text-sky-600 bg-sky-100/80 px-2 py-0.5 rounded-md animate-pulse font-mono">Nemotron / Inkling ACTIVATED</span>
                     </div>
                   )}
                   {selectedEmail.ai_status === 'FAILED' && (
