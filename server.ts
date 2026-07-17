@@ -18,7 +18,9 @@ import {
   ruleBasedFallback,
   registerDbBroadcaster,
   applyDynamicFilters,
-  dbGetEmailByMessageId
+  dbGetEmailByMessageId,
+  dbGetAllPendingEmails,
+  analyzeEmail
 } from "./src/database-service";
 import { 
   performBackgroundSync, 
@@ -222,14 +224,19 @@ async function startServer() {
     } catch (err: any) {
       const latency = Date.now() - start;
       let errMsg = err.message || String(err);
+      let is503 = false;
       if (err.response) {
         const errorData = err.response.data;
         const errorString = typeof errorData === 'object' ? JSON.stringify(errorData) : String(errorData);
         errMsg = `HTTP ${err.response.status}: ${errorString}`;
+        if (err.response.status === 503) {
+          is503 = true;
+          errMsg = "Server Penuh/Sibuk (503)";
+        }
       }
       return {
         model: modelName,
-        status: latency >= 60000 ? "Timeout" : "Error",
+        status: is503 ? "Warning" : (latency >= 60000 ? "Timeout" : "Error"),
         message: errMsg,
         latency: `${latency}ms`
       };
@@ -371,6 +378,133 @@ async function startServer() {
 
       res.json({ success: true, message: "Suggestion applied successfully" });
     } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // GET Pending Queue
+  app.get("/api/ai/pending-queue", async (req, res) => {
+    try {
+      const emails = await dbGetAllPendingEmails();
+      res.json({ success: true, emails });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // GET Server-Sent Events (SSE) stream for Bulk AI Processing
+  app.get("/api/ai/bulk-process-stream", async (req, res) => {
+    // Set SSE headers
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no' // Prevent proxy buffering
+    });
+    res.write(':\n\n'); // SSE start message
+
+    try {
+      console.log("[SSE] Client connected to /api/ai/bulk-process-stream");
+
+      const pending = await dbGetAllPendingEmails();
+      const total = pending.length;
+
+      res.write(`data: ${JSON.stringify({ type: 'start', total, message: `Memulai pemrosesan massal untuk ${total} email pending.` })}\n\n`);
+
+      if (total === 0) {
+        res.write(`data: ${JSON.stringify({ type: 'complete', progress: 100, message: 'Tidak ada email pending di antrean.' })}\n\n`);
+        res.end();
+        return;
+      }
+
+      const BATCH_SIZE = 2;
+      let completed_count = 0;
+
+      for (let i = 0; i < total; i += BATCH_SIZE) {
+        if (req.closed) {
+          console.log("[SSE] Connection closed by client.");
+          break;
+        }
+
+        const batch = pending.slice(i, i + BATCH_SIZE);
+        console.log(`[SSE Bulk AI] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(total / BATCH_SIZE)} (Size: ${batch.length})`);
+
+        await Promise.all(batch.map(async (email) => {
+          if (req.closed) return;
+
+          try {
+            await analyzeEmail(email.message_id);
+            completed_count++;
+            
+            res.write(`data: ${JSON.stringify({
+              type: 'progress',
+              current: completed_count,
+              total: total,
+              message: `Email "${email.subject}" berhasil diproses.`
+            })}\n\n`);
+          } catch (err: any) {
+            completed_count++;
+            console.error(`[SSE Bulk AI Error] Failed to process email ${email.message_id}:`, err);
+            res.write(`data: ${JSON.stringify({
+              type: 'progress',
+              current: completed_count,
+              total: total,
+              message: `Gagal memproses "${email.subject}": ${err.message || String(err)}`
+            })}\n\n`);
+          }
+        }));
+
+        // Delay 3 detik (3000ms) di akhir setiap iterasi batch sebelum memproses kloter email selanjutnya
+        if (i + BATCH_SIZE < total && !req.closed) {
+          console.log(`[SSE Bulk AI] Batch completed. Waiting 3000ms to prevent overload...`);
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+      }
+
+      res.write(`data: ${JSON.stringify({ type: 'complete', progress: 100, message: 'Semua email pending berhasil diproses!' })}\n\n`);
+      res.end();
+
+    } catch (err: any) {
+      console.error("[SSE Bulk AI Error]:", err);
+      res.write(`data: ${JSON.stringify({ type: 'error', message: `Gagal memproses antrean AI: ${err.message || String(err)}` })}\n\n`);
+      res.end();
+    }
+  });
+
+  // POST Trigger Bulk AI Process
+  app.post("/api/ai/bulk-process", async (req, res) => {
+    try {
+      const pending = await dbGetAllPendingEmails();
+      const total = pending.length;
+      
+      if (total === 0) {
+        return res.json({ success: true, message: "No pending emails to process." });
+      }
+
+      // Process in background asynchronously
+      (async () => {
+        const BATCH_SIZE = 2;
+        for (let i = 0; i < total; i += BATCH_SIZE) {
+          const batch = pending.slice(i, i + BATCH_SIZE);
+          await Promise.all(batch.map(async (email) => {
+            try {
+              await analyzeEmail(email.message_id);
+            } catch (err) {
+              console.error(`[Background Bulk AI Error] Failed to process email ${email.message_id}:`, err);
+            }
+          }));
+          
+          if (i + BATCH_SIZE < total) {
+            await new Promise(resolve => setTimeout(resolve, 3000));
+          }
+        }
+      })().catch(err => {
+        console.error("[Background Bulk AI Exception]:", err);
+      });
+
+      res.json({ success: true, message: `Bulk process started in background for ${total} emails.` });
+    } catch (err: any) {
+      console.error("[API Bulk AI Error]:", err);
       res.status(500).json({ success: false, message: err.message || String(err) });
     }
   });

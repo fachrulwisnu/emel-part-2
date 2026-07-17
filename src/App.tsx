@@ -144,6 +144,8 @@ export default function App() {
   // Custom Filters State
   const [customFilters, setCustomFilters] = useState<CustomFilter[]>([]);
   const [filterRules, setFilterRules] = useState<CustomFilter[]>([]);
+  const [configuredRules, setConfiguredRules] = useState<CustomFilter[]>([]);
+  const [isLoadingRules, setIsLoadingRules] = useState(false);
   const [filterMsg, setFilterMsg] = useState('');
   const [editingFilterId, setEditingFilterId] = useState<number | null>(null);
   const [filterForm, setFilterForm] = useState<CustomFilter>({
@@ -178,6 +180,15 @@ export default function App() {
   const [backfillLogs, setBackfillLogs] = useState<string[]>([]);
   const [backfillProgress, setBackfillProgress] = useState<number>(0);
   const [isBackfillStreaming, setIsBackfillStreaming] = useState(false);
+
+  // AI Pending Queue Management States
+  const [pendingCount, setPendingCount] = useState<number>(0);
+  const [pendingEmails, setPendingEmails] = useState<any[]>([]);
+  const [isQueueModalOpen, setIsQueueModalOpen] = useState(false);
+  const [isBulkProcessing, setIsBulkProcessing] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
+  const [bulkLogs, setBulkLogs] = useState<string[]>([]);
+  const [isBulkStreaming, setIsBulkStreaming] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   // AI Health Check States
@@ -547,6 +558,7 @@ export default function App() {
         if (!error && data) {
           setCustomFilters(data);
           setFilterRules(data);
+          setConfiguredRules(data);
           return;
         } else if (error) {
           console.warn('Direct Supabase custom_filters fetch failed, falling back to local API', error);
@@ -562,6 +574,7 @@ export default function App() {
       if (data.success && data.filters) {
         setCustomFilters(data.filters);
         setFilterRules(data.filters);
+        setConfiguredRules(data.filters);
       }
     } catch (err) {
       console.error('Failed to load filters:', err);
@@ -585,6 +598,7 @@ export default function App() {
         if (!error && data) {
           setFilterRules(data);
           setCustomFilters(data);
+          setConfiguredRules(data);
           return;
         } else if (error) {
           console.warn('Direct Supabase custom_filters fetch failed for filterRules, falling back to local API', error);
@@ -600,11 +614,67 @@ export default function App() {
       if (data.success && data.filters) {
         setFilterRules(data.filters);
         setCustomFilters(data.filters);
+        setConfiguredRules(data.filters);
       }
     } catch (err) {
       console.error('Failed to load filters:', err);
     }
   };
+
+  // Hook specifically requested for 'Automation Rule & Mail Config' (Dynamic Filters)
+  // Fetch rules from Supabase/SQLite when component mounts
+  useEffect(() => {
+    const fetchConfiguredRules = async () => {
+      setIsLoadingRules(true);
+      try {
+        const settingsRes = await fetch('/api/settings');
+        const settingsData = await settingsRes.json();
+        let url = '';
+        let key = '';
+        if (settingsData.success && settingsData.settings) {
+          url = settingsData.settings.supabaseUrl;
+          key = settingsData.settings.supabaseKey;
+        }
+
+        if (url && key) {
+          const supabase = createClient(url, key);
+          const { data, error } = await supabase
+            .from('custom_filters')
+            .select('*')
+            .order('id', { ascending: true });
+          
+          if (!error && data) {
+            setConfiguredRules(data);
+            setFilterRules(data);
+            setCustomFilters(data);
+            setIsLoadingRules(false);
+            return;
+          } else if (error) {
+            console.warn('Direct Supabase fetch for configuredRules failed, falling back:', error);
+          }
+        }
+      } catch (err) {
+        console.error('Exception in direct Supabase fetch for configuredRules:', err);
+      }
+
+      // Fallback local API
+      try {
+        const res = await fetch('/api/custom-filters');
+        const data = await res.json();
+        if (data.success && data.filters) {
+          setConfiguredRules(data.filters);
+          setFilterRules(data.filters);
+          setCustomFilters(data.filters);
+        }
+      } catch (err) {
+        console.error('Local API fetch for configuredRules failed:', err);
+      } finally {
+        setIsLoadingRules(false);
+      }
+    };
+
+    fetchConfiguredRules();
+  }, []);
 
   // Initial Fetch & State Update from Supabase on Mount
   useEffect(() => {
@@ -793,6 +863,111 @@ export default function App() {
       setIsBackfilling(false);
     };
   };
+
+  // AI Pending Queue: Fetch and Process
+  const fetchPendingQueue = async (providedSettings?: AppSettings) => {
+    const activeSettings = providedSettings || appSettings;
+    const url = activeSettings.supabaseUrl;
+    const key = activeSettings.supabaseKey;
+
+    if (url && key) {
+      try {
+        const supabase = createClient(url, key);
+        const { data, error } = await supabase
+          .from('emails')
+          .select('message_id, sender, subject, date, ai_status')
+          .eq('ai_status', 'PENDING')
+          .order('date', { ascending: false });
+
+        if (!error && data) {
+          setPendingEmails(data);
+          setPendingCount(data.length);
+          return;
+        } else if (error) {
+          console.warn('[Supabase Fetch Pending Queue Error]:', error);
+        }
+      } catch (err) {
+        console.error('[Supabase Fetch Pending Queue Exception]:', err);
+      }
+    }
+
+    // Fallback SQLite
+    try {
+      const res = await fetch('/api/ai/pending-queue');
+      const data = await res.json();
+      if (data.success && data.emails) {
+        setPendingEmails(data.emails);
+        setPendingCount(data.emails.length);
+      }
+    } catch (err) {
+      console.error('[SQLite Fetch Pending Queue Failed]:', err);
+    }
+  };
+
+  const handleBulkProcessAI = () => {
+    if (pendingCount === 0) {
+      addToast('Antrean Kosong', 'Tidak ada email pending di antrean.');
+      return;
+    }
+
+    setIsBulkProcessing(true);
+    setBulkProgress({ current: 0, total: pendingCount });
+    setBulkLogs(["[System] Menghubungkan ke real-time stream bulk process..."]);
+    setIsBulkStreaming(true);
+
+    const eventSource = new EventSource('/api/ai/bulk-process-stream');
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'start') {
+          setBulkLogs(prev => [...prev, `[System] ${data.message}`]);
+          setBulkProgress({ current: 0, total: data.total });
+        } else if (data.type === 'progress') {
+          setBulkProgress({ current: data.current, total: data.total });
+          setBulkLogs(prev => [...prev, `[Progress ${data.current}/${data.total}] ${data.message}`]);
+        } else if (data.type === 'complete') {
+          setBulkProgress({ current: pendingCount, total: pendingCount });
+          setBulkLogs(prev => [...prev, `[Selesai] ${data.message}`]);
+          addToast('Bulk AI Selesai', data.message || 'Semua email pending berhasil diproses.');
+          eventSource.close();
+          setIsBulkStreaming(false);
+          setIsBulkProcessing(false);
+          fetchPendingQueue();
+          loadEmails(); // Refresh emails list
+        } else if (data.type === 'error') {
+          setBulkLogs(prev => [...prev, `[Error] ${data.message}`]);
+          addToast('Bulk AI Error', data.message);
+          eventSource.close();
+          setIsBulkStreaming(false);
+          setIsBulkProcessing(false);
+          fetchPendingQueue();
+        }
+      } catch (err: any) {
+        console.error("Gagal parsing data SSE:", err);
+      }
+    };
+
+    eventSource.onerror = (err) => {
+      console.error("SSE EventSource error:", err);
+      setBulkLogs(prev => [...prev, "[Error] Koneksi stream terputus atau terjadi kesalahan server."]);
+      addToast('Stream Error', 'Koneksi real-time ke server terputus.');
+      eventSource.close();
+      setIsBulkStreaming(false);
+      setIsBulkProcessing(false);
+      fetchPendingQueue();
+    };
+  };
+
+  // Poll pending queue count to keep the badge dynamic
+  useEffect(() => {
+    fetchPendingQueue();
+    const interval = setInterval(() => {
+      fetchPendingQueue();
+    }, isQueueModalOpen ? 4000 : 12000);
+    return () => clearInterval(interval);
+  }, [appSettings.supabaseUrl, appSettings.supabaseKey, isQueueModalOpen]);
 
   // Manual Trigger Sync
   const handleManualSync = async () => {
@@ -1021,9 +1196,11 @@ export default function App() {
           if (prevEditingId !== null) {
             setFilterRules(prev => prev.map(f => f.id === prevEditingId ? newFilterObj : f));
             setCustomFilters(prev => prev.map(f => f.id === prevEditingId ? newFilterObj : f));
+            setConfiguredRules(prev => prev.map(f => f.id === prevEditingId ? newFilterObj : f));
           } else {
             setFilterRules(prev => [...prev, newFilterObj]);
             setCustomFilters(prev => [...prev, newFilterObj]);
+            setConfiguredRules(prev => [...prev, newFilterObj]);
           }
         } else {
           await loadFilterRules();
@@ -1076,6 +1253,7 @@ export default function App() {
           deletedFromSupabase = true;
           setFilterRules(prev => prev.filter(f => f.id !== id));
           setCustomFilters(prev => prev.filter(f => f.id !== id));
+          setConfiguredRules(prev => prev.filter(f => f.id !== id));
         } else {
           console.error('[Supabase Delete Filter Error]:', error);
           addToast('Delete Error', 'Failed to delete from Supabase: ' + error.message);
@@ -1100,6 +1278,7 @@ export default function App() {
         if (!deletedFromSupabase) {
           setFilterRules(prev => prev.filter(f => f.id !== id));
           setCustomFilters(prev => prev.filter(f => f.id !== id));
+          setConfiguredRules(prev => prev.filter(f => f.id !== id));
         }
       } else {
         if (!deletedFromSupabase) {
@@ -1419,11 +1598,30 @@ export default function App() {
 
             {/* PANE 2: TICKETS EMAIL LIST (MIDDLE) */}
             <section className="w-[380px] border-r border-slate-200 bg-white flex flex-col shrink-0 overflow-y-auto" id="pane_email_list">
-              <div className="p-4 border-b border-slate-100 bg-slate-50 shrink-0 flex items-center justify-between">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                  Tickets List ({filteredEmails.length})
-                </span>
-                <span className="text-[9px] text-slate-400 italic font-medium">Sorted by date</span>
+              <div className="p-4 border-b border-slate-100 bg-slate-50 shrink-0 flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                    Tickets List ({filteredEmails.length})
+                  </span>
+                  <span className="text-[9px] text-slate-400 italic font-medium">Sorted by date</span>
+                </div>
+                {pendingCount > 0 && (
+                  <button
+                    onClick={() => setIsQueueModalOpen(true)}
+                    className="flex items-center justify-between px-3 py-2 bg-amber-50 border border-amber-200 hover:border-amber-300 text-amber-800 rounded-lg text-[11px] font-medium hover:bg-amber-100/80 transition-all cursor-pointer w-full shadow-xs"
+                  >
+                    <span className="flex items-center gap-1.5 font-bold">
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                      </span>
+                      {pendingCount} Email Menunggu AI
+                    </span>
+                    <span className="text-[10px] font-semibold underline hover:text-amber-950 flex items-center gap-0.5">
+                      Kelola Antrean &rarr;
+                    </span>
+                  </button>
+                )}
               </div>
 
               {filteredEmails.length === 0 ? (
@@ -2192,13 +2390,21 @@ export default function App() {
 
                     {/* Existing Rules CRUD Table */}
                     <div className="space-y-3">
-                      <p className="font-bold text-slate-700 text-[10px] uppercase tracking-wider">Configured Filter Rules ({filterRules.length})</p>
+                      <p className="font-bold text-slate-700 text-[10px] uppercase tracking-wider">Configured Filter Rules ({configuredRules.length})</p>
 
-                      {filterRules.length === 0 ? (
+                      {isLoadingRules ? (
+                        <div className="flex items-center space-x-2 py-4">
+                          <svg className="animate-spin h-5 w-5 text-slate-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          <span className="text-xs text-slate-500 font-medium">Memuat aturan...</span>
+                        </div>
+                      ) : configuredRules.length === 0 ? (
                         <p className="text-xs text-slate-400 italic">No custom filter rules defined yet.</p>
                       ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {filterRules.map(rule => (
+                          {configuredRules.map(rule => (
                             <div key={rule.id} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow relative flex flex-col justify-between">
                               <div>
                                 <div className="flex justify-between items-start">
@@ -2635,13 +2841,14 @@ export default function App() {
                             <tbody className="divide-y divide-slate-100">
                               {healthData.map((item, index) => {
                                 const isHealthy = item.status === 'Active';
+                                const isWarning = item.status === 'Warning';
                                 const latencyValue = item.latency ? parseInt(item.latency, 10) : 0;
                                 const isTimeout = item.status === 'Timeout' || (item.latency && latencyValue > 60000);
-                                const isError = item.status === 'Error' || (!isHealthy && !isTimeout);
+                                const isError = item.status === 'Error' || (!isHealthy && !isTimeout && !isWarning);
 
                                 // Dynamic latency coloring: Green (< 5s), Yellow (5s - 20s), Red (> 20s or Error)
                                 let latencyColorClass = 'text-slate-400';
-                                if (item.latency && !isError && !isTimeout) {
+                                if (item.latency && !isError && !isTimeout && !isWarning) {
                                   if (latencyValue < 5000) {
                                     latencyColorClass = 'text-emerald-600';
                                   } else if (latencyValue < 20000) {
@@ -2649,6 +2856,8 @@ export default function App() {
                                   } else {
                                     latencyColorClass = 'text-rose-500';
                                   }
+                                } else if (isWarning) {
+                                  latencyColorClass = 'text-amber-500 font-bold';
                                 } else if (isTimeout || isError) {
                                   latencyColorClass = 'text-rose-500 font-bold';
                                 }
@@ -2672,6 +2881,12 @@ export default function App() {
                                           <span>Healthy</span>
                                         </span>
                                       )}
+                                      {isWarning && (
+                                        <span className="inline-flex items-center space-x-1 px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-bold text-[10px]">
+                                          <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+                                          <span>Warning</span>
+                                        </span>
+                                      )}
                                       {isTimeout && (
                                         <span className="inline-flex items-center space-x-1 px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-bold text-[10px]">
                                           <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
@@ -2685,7 +2900,7 @@ export default function App() {
                                         </span>
                                       )}
                                       {item.message && (
-                                        <div className="text-[10px] text-rose-600 mt-1 font-mono break-all bg-rose-50/50 p-1.5 rounded border border-rose-100">
+                                        <div className={`text-[10px] mt-1 font-mono break-all p-1.5 rounded border ${isWarning ? 'text-amber-700 bg-amber-50/50 border-amber-200' : 'text-rose-600 bg-rose-50/50 border-rose-100'}`}>
                                           {item.message}
                                         </div>
                                       )}
@@ -2934,6 +3149,146 @@ export default function App() {
                 className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer shadow-sm transition-all text-xs"
               >
                 Apply suggestion
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI Pending Queue Management Modal Overlay */}
+      {isQueueModalOpen && (
+        <div className="fixed inset-0 z-45 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in">
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[85vh] overflow-hidden">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <div>
+                <h3 className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                  </span>
+                  AI Pending Queue Management
+                </h3>
+                <p className="text-[10px] text-slate-500 font-medium mt-0.5">
+                  Kelola pemrosesan massal email berstatus PENDING dengan Batched Parallelism (maks. 3 per batch) untuk menghindari rate limit.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (isBulkProcessing) {
+                    if (!confirm("Proses bulk sedang berjalan. Menutup modal tidak akan menghentikan proses latar belakang, tetapi Anda akan kehilangan pemantauan log langsung. Tetap tutup?")) return;
+                  }
+                  setIsQueueModalOpen(false);
+                }}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer p-1 text-lg"
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto flex-1 space-y-5">
+              {/* Active Process Log Terminal */}
+              {isBulkProcessing && (
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-700">
+                      Diproses: {bulkProgress.current} dari {bulkProgress.total} Email
+                    </span>
+                    <span className="font-mono text-blue-600 font-bold">
+                      {bulkProgress.total > 0 ? Math.round((bulkProgress.current / bulkProgress.total) * 100) : 0}%
+                    </span>
+                  </div>
+                  {/* Progress Bar Container */}
+                  <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden border border-slate-200">
+                    <div 
+                      className="bg-blue-600 h-full rounded-full transition-all duration-300"
+                      style={{ width: `${bulkProgress.total > 0 ? (bulkProgress.current / bulkProgress.total) * 100 : 0}%` }}
+                    />
+                  </div>
+
+                  {/* Terminal Logs */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 font-mono text-[10px] text-slate-300 space-y-1 max-h-[160px] overflow-y-auto h-[160px] leading-relaxed">
+                    {bulkLogs.map((log, index) => (
+                      <div key={index} className="flex items-start gap-1">
+                        <span className="text-slate-500 select-none">&gt;</span>
+                        <span>{log}</span>
+                      </div>
+                    ))}
+                    <div ref={logsEndRef} />
+                  </div>
+                </div>
+              )}
+
+              {/* Pending Queue List */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-700 text-[10px] uppercase tracking-wider">
+                    Daftar Email Pending ({pendingEmails.length})
+                  </span>
+                  {!isBulkProcessing && pendingEmails.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleBulkProcessAI}
+                      className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer text-xs shadow-xs transition-colors flex items-center gap-1"
+                    >
+                      🚀 Proses Semua (Bulk AI Extraction)
+                    </button>
+                  )}
+                </div>
+
+                {pendingEmails.length === 0 ? (
+                  <div className="p-8 text-center bg-slate-50 border border-dashed border-slate-200 rounded-xl">
+                    <p className="text-xs text-slate-400 italic">Tidak ada email dalam antrean pending.</p>
+                  </div>
+                ) : (
+                  <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[250px] overflow-y-auto">
+                    <table className="w-full border-collapse text-left text-[11px] font-medium text-slate-600">
+                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[9px] font-bold">
+                        <tr>
+                          <th className="px-4 py-2.5">Pengirim</th>
+                          <th className="px-4 py-2.5">Subjek</th>
+                          <th className="px-4 py-2.5 w-32">Waktu Terima</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {pendingEmails.map((email) => (
+                          <tr key={email.message_id} className="hover:bg-slate-50/50">
+                            <td className="px-4 py-2.5 truncate max-w-[150px] font-semibold text-slate-700">
+                              {email.sender}
+                            </td>
+                            <td className="px-4 py-2.5 truncate max-w-[250px]">
+                              {email.subject}
+                            </td>
+                            <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap font-mono text-[10px]">
+                              {new Date(email.date).toLocaleString('id-ID', {
+                                dateStyle: 'short',
+                                timeStyle: 'short'
+                              })}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  if (isBulkProcessing) {
+                    if (!confirm("Proses bulk sedang berjalan. Menutup modal tidak akan menghentikan proses latar belakang, tetapi Anda akan kehilangan pemantauan log langsung. Tetap tutup?")) return;
+                  }
+                  setIsQueueModalOpen(false);
+                }}
+                className="px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-bold rounded-lg cursor-pointer transition-all text-xs"
+              >
+                {isBulkProcessing ? 'Tutup (Pantau di Latar Belakang)' : 'Tutup'}
               </button>
             </div>
           </div>

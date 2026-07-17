@@ -644,6 +644,65 @@ JSON schema:
 }
 
 /**
+ * processEmailAI implements cascading try-catch failover logic as requested.
+ */
+export async function processEmailAI(emailText: string): Promise<any> {
+  // 1. TIER UTAMA (Nemotron + Inkling Paralel)
+  try {
+    console.log("[AI Worker] Menjalankan Nemotron (Summary) & Inkling (Tagging) secara paralel...");
+    const [summaryData, taggingData] = await Promise.all([
+      getSummaryNemotron(emailText),
+      getTaggingInkling(emailText)
+    ]);
+    const parsed = {
+      ...(summaryData || {}),
+      ...(taggingData || {})
+    };
+    console.log("[AI Worker] Successfully merged parallel AI outputs.");
+    return parsed;
+  } catch (error: any) {
+    console.warn(`[AI Warning] Core AI gagal (Error: ${error.message || String(error)}). Rotasi ke Tier 1: DeepSeek...`);
+
+    // 2. TIER 1 (DeepSeek V4 Pro)
+    try {
+      const parsed = await fallbackDeepseek(emailText);
+      return parsed;
+    } catch (deepseekError: any) {
+      console.warn("[AI Warning] DeepSeek gagal. Rotasi ke Tier 2: Gemma 4...");
+
+      // 3. TIER 2 (Gemma 4 31B)
+      try {
+        const parsed = await fallbackGemma4(emailText);
+        return parsed;
+      } catch (gemmaError: any) {
+        console.warn("[AI Warning] Gemma 4 gagal. Rotasi ke Last Resort: Minimax...");
+
+        // 4. LAST RESORT (Minimax M3)
+        try {
+          const parsed = await fallbackMinimax(emailText);
+          return parsed;
+        } catch (minimaxError: any) {
+          console.error("[AI Error] Minimax gagal. Menggunakan default...");
+          return {
+            summary: "Gagal diproses AI",
+            urgency_level: "Routine",
+            suggested_tag: "Lainnya",
+            action_required: false,
+            suggested_folder_parent: "Operation",
+            suggested_folder_child: "General",
+            is_cit_order: false,
+            cit_type: "None",
+            suggested_bank: "",
+            extracted_notes: "",
+            currency: "IDR"
+          };
+        }
+      }
+    }
+  }
+}
+
+/**
  * Processes email text body using NVIDIA API and Split-Task AI Architecture (Nemotron + Inkling with fallback chain)
  */
 export async function processEmailWithNvidia(
@@ -674,35 +733,9 @@ export async function processEmailWithNvidia(
   let parsed: any = null;
 
   try {
-    console.log("[AI Worker] Menjalankan Nemotron (Summary) & Inkling (Tagging) secara paralel...");
-    const [summaryData, taggingData] = await Promise.all([
-      getSummaryNemotron(emailText),
-      getTaggingInkling(emailText)
-    ]);
-    parsed = {
-      ...(summaryData || {}),
-      ...(taggingData || {})
-    };
-    console.log("[AI Worker] Successfully merged parallel AI outputs.");
-  } catch (error: any) {
-    console.warn(`[AI Error] Core AI gagal (${error.message || String(error)}). Memulai Fallback ke DeepSeek...`);
-    
-    try {
-      parsed = await fallbackDeepseek(emailText);
-    } catch (deepseekError: any) {
-      console.warn(`[AI Error] DeepSeek gagal (${deepseekError.message || String(deepseekError)}). Fallback ke Gemma 4...`);
-      
-      try {
-        parsed = await fallbackGemma4(emailText);
-      } catch (gemmaError: any) {
-        console.error(`[AI Error] Gemma 4 gagal (${gemmaError.message || String(gemmaError)}). Menggunakan pertahanan terakhir: Minimax...`);
-        try {
-          parsed = await fallbackMinimax(emailText);
-        } catch (minimaxError: any) {
-          console.error(`[AI Error] Minimax gagal (${minimaxError.message || String(minimaxError)}). Menggunakan default...`);
-        }
-      }
-    }
+    parsed = await processEmailAI(emailText);
+  } catch (err: any) {
+    console.error("[AI Worker] Fatal processEmailAI failed unexpectedly:", err);
   }
 
   if (!parsed) {
@@ -2005,6 +2038,57 @@ export async function dbGetUnsummarizedEmails(): Promise<any[]> {
   }
 
   return Array.from(mergedMap.values());
+}
+
+/**
+ * Fetches all emails with ai_status = 'PENDING' from Supabase and SQLite.
+ */
+export async function dbGetAllPendingEmails(): Promise<Email[]> {
+  const supabase = getSupabaseClient();
+  let pendingEmails: Email[] = [];
+
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('emails')
+        .select('*')
+        .eq('ai_status', 'PENDING')
+        .order('date', { ascending: false });
+      
+      if (!error && data) {
+        pendingEmails = data.map((row: any) => ({
+          ...row,
+          tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || [])
+        }));
+      }
+    } catch (e) {
+      console.error('[dbGetAllPendingEmails] Error fetching from Supabase:', e);
+    }
+  }
+
+  // Fallback to SQLite
+  if (pendingEmails.length === 0) {
+    const db = getSqliteDb();
+    const rows: any[] = await new Promise((resolve) => {
+      db.all(
+        "SELECT * FROM emails WHERE ai_status = 'PENDING' ORDER BY date DESC",
+        [],
+        (err, rows: any[]) => {
+          if (err) resolve([]);
+          resolve(rows || []);
+        }
+      );
+    });
+
+    pendingEmails = rows.map((row: any) => ({
+      ...row,
+      tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+      attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || [])
+    }));
+  }
+
+  return pendingEmails;
 }
 
 
