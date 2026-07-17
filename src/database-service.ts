@@ -478,20 +478,10 @@ function parseCleanJson(text: string): any {
   return JSON.parse(cleaned);
 }
 
-// Config Client for each model
-const getOpenAIClient = (apiKey: string | undefined) => {
-  const key = apiKey || process.env.NVIDIA_API_KEY || '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';
-  return new OpenAI({
-    apiKey: key,
-    baseURL: process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1',
-    timeout: 60000,
-  });
-};
-
 // --- CORE PARALLEL FUNCTIONS ---
 
 async function getSummaryNemotron(emailText: string): Promise<any> {
-  const client = getOpenAIClient(process.env.NVIDIA_API_KEY_NEMOTRON);
+  const apiKey = process.env.NVIDIA_API_KEY_NEMOTRON || process.env.NVIDIA_API_KEY || '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';
   const systemContent = `Anda adalah asisten data operasional cerdas berbasis model nvidia/nemotron-3-ultra-550b-a55b. Ekstrak data operasional penting dari email ke dalam format JSON. Anda harus mengembalikan JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
 
 JSON schema:
@@ -506,7 +496,7 @@ JSON schema:
   "extracted_notes": "Instruksi khusus atau catatan operasional"
 }`;
 
-  const completion = await client.chat.completions.create({
+  const payload = {
     model: "nvidia/nemotron-3-ultra-550b-a55b",
     messages: [
       { role: "system", content: systemContent },
@@ -515,16 +505,26 @@ JSON schema:
     temperature: 1,
     top_p: 0.95,
     max_tokens: 16384,
-    // Parameter khusus Nemotron
-    extra_body: { chat_template_kwargs: { enable_thinking: true }, reasoning_budget: 16384 }
-  } as any);
-  
-  const content = completion.choices[0]?.message?.content || '';
+    chat_template_kwargs: { enable_thinking: true },
+    reasoning_budget: 16384,
+    stream: false
+  };
+
+  const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    timeout: 60000
+  });
+
+  const content = response.data?.choices?.[0]?.message?.content || '';
   return parseCleanJson(content);
 }
 
 async function getTaggingInkling(emailText: string): Promise<any> {
-  const client = getOpenAIClient(process.env.NVIDIA_API_KEY_INKLING);
+  const apiKey = process.env.NVIDIA_API_KEY_INKLING || process.env.NVIDIA_API_KEY || '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';
   const systemContent = `Anda adalah asisten analisis konteks panjang berbasis model thinkingmachines/inkling. Analisis email secara mendalam dan tentukan klasifikasi tag serta urgensinya ke dalam format JSON murni tanpa markdown, tanpa teks penjelasan di luar JSON.
 
 JSON schema:
@@ -534,7 +534,7 @@ JSON schema:
   "action_required": true | false
 }`;
 
-  const completion = await client.chat.completions.create({
+  const payload = {
     model: "thinkingmachines/inkling",
     messages: [
       { role: "system", content: systemContent },
@@ -542,17 +542,27 @@ JSON schema:
     ],
     temperature: 1,
     top_p: 0.95,
-    max_tokens: 8192
+    max_tokens: 8192,
+    stream: false
+  };
+
+  const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    timeout: 60000
   });
 
-  const content = completion.choices[0]?.message?.content || '';
+  const content = response.data?.choices?.[0]?.message?.content || '';
   return parseCleanJson(content);
 }
 
 // --- FALLBACK FUNCTIONS ---
 
 async function fallbackDeepseek(emailText: string): Promise<any> {
-  const client = getOpenAIClient(process.env.NVIDIA_API_KEY_DEEPSEEK);
+  const apiKey = process.env.NVIDIA_API_KEY_DEEPSEEK || process.env.NVIDIA_API_KEY || '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';
   const systemContent = `Anda adalah asisten data operasional cerdas berbasis deepseek-ai/deepseek-v4-pro. Ekstrak data operasional penting dari email ke dalam format JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
 
 JSON schema:
@@ -570,7 +580,7 @@ JSON schema:
   "action_required": true | false
 }`;
 
-  const completion = await client.chat.completions.create({
+  const payload = {
     model: "deepseek-ai/deepseek-v4-pro",
     messages: [
       { role: "system", content: systemContent },
@@ -579,15 +589,25 @@ JSON schema:
     temperature: 1,
     top_p: 0.95,
     max_tokens: 16384,
-    extra_body: { chat_template_kwargs: { thinking: false } }
-  } as any);
+    chat_template_kwargs: { thinking: false },
+    stream: false
+  };
 
-  const content = completion.choices[0]?.message?.content || '';
+  const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    timeout: 60000
+  });
+
+  const content = response.data?.choices?.[0]?.message?.content || '';
   return parseCleanJson(content);
 }
 
 async function fallbackGemma4(emailText: string): Promise<any> {
-  const client = getOpenAIClient(process.env.NVIDIA_API_KEY_GEMMA);
+  const apiKey = process.env.NVIDIA_API_KEY_GEMMA4 || process.env.NVIDIA_API_KEY_GEMMA || process.env.NVIDIA_API_KEY || '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';
   const systemContent = `Anda adalah asisten data operasional cerdas berbasis google/gemma-4-31b-it. Ekstrak data operasional penting dari email ke dalam format JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
 
 JSON schema:
@@ -605,7 +625,7 @@ JSON schema:
   "action_required": true | false
 }`;
 
-  const completion = await client.chat.completions.create({
+  const payload = {
     model: "google/gemma-4-31b-it",
     messages: [
       { role: "system", content: systemContent },
@@ -614,15 +634,25 @@ JSON schema:
     temperature: 1,
     top_p: 0.95,
     max_tokens: 16384,
-    extra_body: { chat_template_kwargs: { enable_thinking: true } }
-  } as any);
+    chat_template_kwargs: { enable_thinking: true },
+    stream: false
+  };
 
-  const content = completion.choices[0]?.message?.content || '';
+  const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    timeout: 60000
+  });
+
+  const content = response.data?.choices?.[0]?.message?.content || '';
   return parseCleanJson(content);
 }
 
 async function fallbackMinimax(emailText: string): Promise<any> {
-  const client = getOpenAIClient(process.env.NVIDIA_API_KEY_MINIMAX);
+  const apiKey = process.env.NVIDIA_API_KEY_MINIMAX || process.env.NVIDIA_API_KEY || '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';
   const systemContent = `Anda adalah asisten data operasional cerdas berbasis minimaxai/minimax-m3. Ekstrak data operasional penting dari email ke dalam format JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
 
 JSON schema:
@@ -640,7 +670,7 @@ JSON schema:
   "action_required": true | false
 }`;
 
-  const completion = await client.chat.completions.create({
+  const payload = {
     model: "minimaxai/minimax-m3",
     messages: [
       { role: "system", content: systemContent },
@@ -648,10 +678,20 @@ JSON schema:
     ],
     temperature: 1,
     top_p: 0.95,
-    max_tokens: 8192
+    max_tokens: 8192,
+    stream: false
+  };
+
+  const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    timeout: 60000
   });
 
-  const content = completion.choices[0]?.message?.content || '';
+  const content = response.data?.choices?.[0]?.message?.content || '';
   return parseCleanJson(content);
 }
 

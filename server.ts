@@ -111,24 +111,27 @@ async function startServer() {
       actualKey = process.env.NVIDIA_API_KEY_NEMOTRON;
     } else if (modelName === "deepseek-ai/deepseek-v4-pro" && process.env.NVIDIA_API_KEY_DEEPSEEK) {
       actualKey = process.env.NVIDIA_API_KEY_DEEPSEEK;
-    } else if (modelName === "google/gemma-4-31b-it" && process.env.NVIDIA_API_KEY_GEMMA) {
-      actualKey = process.env.NVIDIA_API_KEY_GEMMA;
+    } else if (modelName === "google/gemma-4-31b-it" && (process.env.NVIDIA_API_KEY_GEMMA4 || process.env.NVIDIA_API_KEY_GEMMA)) {
+      actualKey = process.env.NVIDIA_API_KEY_GEMMA4 || process.env.NVIDIA_API_KEY_GEMMA || "";
     }
     
     try {
       const payload: any = {
         model: modelName,
         messages: [{ role: "user", content: "Balas dengan kata 'OK' saja tanpa tanda baca." }],
+        temperature: 1,
+        top_p: 0.95,
         max_tokens: 10,
-        temperature: 0.1
+        stream: false
       };
 
       if (modelName === "nvidia/nemotron-3-ultra-550b-a55b") {
-        payload.extra_body = { chat_template_kwargs: { enable_thinking: true }, reasoning_budget: 1024 };
+        payload.chat_template_kwargs = { enable_thinking: true };
+        payload.reasoning_budget = 1024;
       } else if (modelName === "google/gemma-4-31b-it") {
-        payload.extra_body = { chat_template_kwargs: { enable_thinking: true } };
+        payload.chat_template_kwargs = { enable_thinking: true };
       } else if (modelName === "deepseek-ai/deepseek-v4-pro") {
-        payload.extra_body = { chat_template_kwargs: { thinking: false } };
+        payload.chat_template_kwargs = { thinking: false };
       }
 
       const response = await axios.post(
@@ -146,6 +149,8 @@ async function startServer() {
 
       const latency = Date.now() - start;
       if (response.status === 200) {
+        // Parse the response content
+        const content = response.data?.choices?.[0]?.message?.content || "";
         return {
           model: modelName,
           status: "Active",
@@ -163,7 +168,9 @@ async function startServer() {
       const latency = Date.now() - start;
       let errMsg = err.message || String(err);
       if (err.response) {
-        errMsg = `HTTP ${err.response.status}: ${typeof err.response.data === 'object' ? JSON.stringify(err.response.data) : String(err.response.data)}`;
+        const errorData = err.response.data;
+        const errorString = typeof errorData === 'object' ? JSON.stringify(errorData) : String(errorData);
+        errMsg = `HTTP ${err.response.status}: ${errorString}`;
       }
       return {
         model: modelName,
